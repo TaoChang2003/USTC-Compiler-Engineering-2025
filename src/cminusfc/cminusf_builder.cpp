@@ -58,8 +58,51 @@ Value* CminusfBuilder::visit(ASTNum &node) {
 }
 
 Value* CminusfBuilder::visit(ASTVarDeclaration &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+    // if pre_enter_scope is true, we just entered a function and
+    // should not call scope.enter() again for the compound stmt that
+    // immediately follows the function header. Instead clear the flag.
+    if (context.pre_enter_scope) {
+        context.pre_enter_scope = false;
+    }
+
+    // Global variable: scope.in_global() == true
+    if (scope.in_global()) {
+        // create global variable
+        if (node.num != nullptr) {
+            // array global
+            auto arr_len = node.num->i_val;
+            Type *elem_ty = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+            auto *arr_ty = module->get_array_type(elem_ty, arr_len);
+            // initializer: zeroinitializer
+            auto *init = ConstantZero::get(arr_ty, module.get());
+            auto *g = GlobalVariable::create(node.id, module.get(), arr_ty, false, init);
+            scope.push(node.id, g);
+        } else {
+            // scalar global
+            Type *ty = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+            auto *init = ConstantZero::get(ty, module.get());
+            auto *g = GlobalVariable::create(node.id, module.get(), ty, false, init);
+            scope.push(node.id, g);
+        }
+        return nullptr;
+    }
+
+    // Local variable: create alloca in current insertion block
+    if (node.num != nullptr) {
+        // local array
+        auto arr_len = node.num->i_val;
+        Type *elem_ty = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+        auto *arr_ty = module->get_array_type(elem_ty, arr_len);
+        auto *alloc = builder->create_alloca(arr_ty);
+        // push the alloca (it's a pointer) into scope
+        scope.push(node.id, alloc);
+    } else {
+        // local scalar: allocate space for the value
+        Type *ty = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+        auto *alloc = builder->create_alloca(ty);
+        scope.push(node.id, alloc);
+    }
+
     return nullptr;
 }
 
@@ -123,23 +166,51 @@ Value* CminusfBuilder::visit(ASTFunDeclaration &node) {
 }
 
 Value* CminusfBuilder::visit(ASTParam &node) {
-    return nullptr;
+    // For function parameters, we need an allocas to store argument values
+    // If parameter is array, the function parameter type is a pointer.
+    if (context.pre_enter_scope) {
+        // We are called from function prologue handling where the caller
+        // will store the incoming Argument into this returned alloca.
+        context.pre_enter_scope = false;
+    }
+
+    if (node.isarray) {
+        // parameter as pointer
+        Type *ptr_ty = (node.type == TYPE_INT) ? INT32PTR_T : FLOATPTR_T;
+        // create an alloca to hold the pointer
+        auto *alloc = builder->create_alloca(ptr_ty);
+        return alloc;
+    } else {
+        Type *ty = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
+        auto *alloc = builder->create_alloca(ty);
+        return alloc;
+    }
 }
 
 Value* CminusfBuilder::visit(ASTCompoundStmt &node) {
-    // TODO: This function is not complete.
-    // You may need to add some code here
-    // to deal with complex statements. 
-    
+    // Enter a new scope for compound statement unless we just entered from
+    // a function header (pre_enter_scope signals that function already
+    // did scope.enter()).
+    if (!context.pre_enter_scope) {
+        scope.enter();
+    } else {
+        // consume the flag and don't re-enter
+        context.pre_enter_scope = false;
+    }
+
     for (auto &decl : node.local_declarations) {
         decl->accept(*this);
     }
 
     for (auto &stmt : node.statement_list) {
         stmt->accept(*this);
-        if (builder->get_insert_block()->get_terminator() == nullptr)
+        // if current block already has terminator, stop emitting further stmts
+        if (builder->get_insert_block()->get_terminator() != nullptr)
             break;
     }
+
+    // exit the scope we entered here
+    scope.exit();
     return nullptr;
 }
 
@@ -190,8 +261,35 @@ Value* CminusfBuilder::visit(ASTSelectionStmt &node) {
 }
 
 Value* CminusfBuilder::visit(ASTIterationStmt &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+    // while (expr) stmt;
+    // create basic blocks: cond, body, cont
+    auto *condBB = BasicBlock::create(module.get(), "", context.func);
+    auto *bodyBB = BasicBlock::create(module.get(), "", context.func);
+    auto *contBB = BasicBlock::create(module.get(), "", context.func);
+
+    // jump to condition first
+    builder->create_br(condBB);
+
+    // cond block
+    builder->set_insert_point(condBB);
+    auto *cond_val = node.expression->accept(*this);
+    Value *cond_bool = nullptr;
+    if (cond_val->get_type()->is_integer_type()) {
+        cond_bool = builder->create_icmp_ne(cond_val, CONST_INT(0));
+    } else {
+        cond_bool = builder->create_fcmp_ne(cond_val, CONST_FP(0.));
+    }
+    builder->create_cond_br(cond_bool, bodyBB, contBB);
+
+    // body block
+    builder->set_insert_point(bodyBB);
+    node.statement->accept(*this);
+    if (!builder->get_insert_block()->is_terminated()) {
+        builder->create_br(condBB);
+    }
+
+    // continue block
+    builder->set_insert_point(contBB);
     return nullptr;
 }
 
@@ -302,8 +400,56 @@ Value* CminusfBuilder::visit(ASTAssignExpression &node) {
 }
 
 Value* CminusfBuilder::visit(ASTSimpleExpression &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
+    if (node.additive_expression_r == nullptr) {
+        return node.additive_expression_l->accept(*this);
+    }
+
+    auto *l = node.additive_expression_l->accept(*this);
+    auto *r = node.additive_expression_r->accept(*this);
+
+    // promote types if needed
+    bool l_is_int = l->get_type()->is_integer_type();
+    if (l->get_type() != r->get_type()) {
+        if (l_is_int) {
+            l = builder->create_sitofp(l, FLOAT_T);
+        } else {
+            r = builder->create_sitofp(r, FLOAT_T);
+        }
+    }
+
+    // result is i1
+    switch (node.op) {
+    case OP_LT:
+        if (l->get_type()->is_integer_type())
+            return builder->create_icmp_lt(l, r);
+        else
+            return builder->create_fcmp_lt(l, r);
+    case OP_LE:
+        if (l->get_type()->is_integer_type())
+            return builder->create_icmp_le(l, r);
+        else
+            return builder->create_fcmp_le(l, r);
+    case OP_GT:
+        if (l->get_type()->is_integer_type())
+            return builder->create_icmp_gt(l, r);
+        else
+            return builder->create_fcmp_gt(l, r);
+    case OP_GE:
+        if (l->get_type()->is_integer_type())
+            return builder->create_icmp_ge(l, r);
+        else
+            return builder->create_fcmp_ge(l, r);
+    case OP_EQ:
+        if (l->get_type()->is_integer_type())
+            return builder->create_icmp_eq(l, r);
+        else
+            return builder->create_fcmp_eq(l, r);
+    case OP_NEQ:
+        if (l->get_type()->is_integer_type())
+            return builder->create_icmp_ne(l, r);
+        else
+            return builder->create_fcmp_ne(l, r);
+    }
     return nullptr;
 }
 
