@@ -156,8 +156,16 @@ Value* CminusfBuilder::visit(ASTFunDeclaration &node) {
     return nullptr;
 }
 
+
 Value* CminusfBuilder::visit(ASTParam &node) {
-    return nullptr;
+    Type* type;
+    if (node.type == TYPE_INT) {
+        type = node.isarray ? INT32PTR_T : INT32_T;
+    } else {
+        type = node.isarray ? FLOATPTR_T : FLOAT_T;
+    }
+    // 为参数在栈上分配空间
+    return builder->create_alloca(type);
 }
 
 Value* CminusfBuilder::visit(ASTCompoundStmt &node) {
@@ -364,8 +372,52 @@ Value* CminusfBuilder::visit(ASTAssignExpression &node) {
 }
 
 Value* CminusfBuilder::visit(ASTSimpleExpression &node) {
-    
-    return nullptr;
+    Value* l_val = node.additive_expression_l->accept(*this);
+    Value* r_val = node.additive_expression_r->accept(*this);
+
+    bool is_int = promote(&*builder, &l_val, &r_val);
+
+    Value* cond_val = nullptr;
+    switch (node.op) {
+        case OP_EQ:
+            if (is_int)
+                cond_val=builder->create_icmp_eq(l_val, r_val);
+            else
+                cond_val=builder->create_fcmp_eq(l_val, r_val);
+            break;
+        case OP_GE:
+            if (is_int)
+                cond_val=builder->create_icmp_ge(l_val, r_val);
+            else
+                cond_val=builder->create_fcmp_ge(l_val, r_val);
+            break;
+        case OP_GT:
+            if (is_int)
+                cond_val=builder->create_icmp_gt(l_val, r_val);
+            else
+                cond_val=builder->create_fcmp_gt(l_val, r_val);
+            break;
+        case OP_LE:
+            if (is_int)
+                cond_val=builder->create_icmp_le(l_val, r_val);
+            else
+                cond_val=builder->create_fcmp_le(l_val, r_val);
+            break;
+        case OP_LT:
+            if (is_int)
+                cond_val=builder->create_icmp_lt(l_val, r_val);
+            else
+                cond_val=builder->create_fcmp_lt(l_val, r_val);
+            break;
+        case OP_NEQ:
+            if (is_int)
+                cond_val=builder->create_icmp_ne(l_val, r_val);
+            else
+                cond_val=builder->create_fcmp_ne(l_val, r_val);
+            break;
+    }
+
+    return cond_val;
 }
 
 Value* CminusfBuilder::visit(ASTAdditiveExpression &node) {
