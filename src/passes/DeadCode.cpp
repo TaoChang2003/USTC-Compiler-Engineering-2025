@@ -14,9 +14,12 @@ void DeadCode::run() {
         for (auto &F : m_->get_functions()) {
             auto func = &F;
             changed |= clear_basic_blocks(func);
+            marked.clear();
             mark(func);
             changed |= sweep(func);
         }
+
+        sweep_globally();
     } while (changed);
     LOG_INFO << "dead code pass erased " << ins_count << " instructions";
 }
@@ -40,11 +43,28 @@ bool DeadCode::clear_basic_blocks(Function *func) {
 
 void DeadCode::mark(Function *func) {
     // TODO
-    
+    for (auto &bb : func->get_basic_blocks()) {
+        for (auto &instr : bb.get_instructions()) {
+            Instruction *ins = &instr;
+            if (is_critical(ins)) {
+                mark(ins);
+            }
+        }
+    }
 }
 
 void DeadCode::mark(Instruction *ins) {
     // TODO
+    if (marked.find(ins) != marked.end() && marked[ins]) {
+        return;
+    }
+    marked[ins] = true;
+    for (auto operand : ins->get_operands()) {
+        if (!operand) continue;
+        if (auto def_ins = static_cast<Instruction *>(operand)) {
+            mark(def_ins);
+        }
+    }
 }
 
 bool DeadCode::sweep(Function *func) {
@@ -58,9 +78,24 @@ bool DeadCode::sweep(Function *func) {
     std::unordered_set<Instruction *> wait_del{};
 
     // 1. 收集所有未被标记的指令
- 
-
-    // 2. 执行删除
+    for (auto &bb : func->get_basic_blocks()) {
+        for (auto &instr : bb.get_instructions()) {
+            Instruction *ins = &instr;
+            if (marked.find(ins) == marked.end() || !marked[ins]) {
+                wait_del.insert(ins);
+            }
+        }
+        if (!wait_del.empty()) {
+            for (auto ins : wait_del) {
+                // 删除指令前，先删除操作数的引用
+                ins->remove_all_operands();
+                bb.remove_instr(ins);
+                ins_count++;
+                delete ins;
+            }
+            wait_del.clear();
+        }
+    }
   
     
     return not wait_del.empty(); // changed
@@ -73,7 +108,25 @@ bool DeadCode::is_critical(Instruction *ins) {
     // 2. 如果是无用的分支指令，则无用
     // 3. 如果是无用的返回指令，则无用
     // 4. 如果是无用的存储指令，则无用
-    
+    if (ins->get_use_list().size() > 0) {
+        return true;
+    }
+
+    if (ins->is_call()) {
+        auto call_inst = static_cast<CallInst *>(ins);
+        auto callee = call_inst->func_;
+        if (func_info->is_pure_function(callee)) {
+            return false;
+        } else {
+            return true;
+        }   
+    }
+
+    if (ins->is_br() || ins->is_ret() || ins->is_store() || ins->is_phi()) {
+        return true;
+    }
+
+    return false;
 }
 
 void DeadCode::sweep_globally() {
