@@ -144,8 +144,46 @@ void ConstPropagation::run() {
                         wait_delete.push_back(&instr);
                     }
                 }
-                // TODO: fold other type of expression
-                throw std::runtime_error("Lab2: 你有一个TODO需要完成！");
+                // fold other types: int cmp, float binary ops, and casts
+                else if (instr.is_cmp()) {
+                    auto v1 = cast_constantint(instr.get_operand(0));
+                    auto v2 = cast_constantint(instr.get_operand(1));
+                    if (v1 && v2) {
+                        auto fold_const = folder->compute(instr.get_instr_type(), v1, v2);
+                        instr.replace_all_use_with(fold_const);
+                        wait_delete.push_back(&instr);
+                    }
+                } else if (instr.is_fcmp()) {
+                    auto v1 = cast_constantfp(instr.get_operand(0));
+                    auto v2 = cast_constantfp(instr.get_operand(1));
+                    if (v1 && v2) {
+                        auto fold_const = folder->compute(instr.get_instr_type(), v1, v2);
+                        instr.replace_all_use_with(fold_const);
+                        wait_delete.push_back(&instr);
+                    }
+                } else if (instr.is_fadd() || instr.is_fsub() || instr.is_fmul() || instr.is_fdiv()) {
+                    auto v1 = cast_constantfp(instr.get_operand(0));
+                    auto v2 = cast_constantfp(instr.get_operand(1));
+                    if (v1 && v2) {
+                        auto fold_const = folder->compute(instr.get_instr_type(), v1, v2);
+                        instr.replace_all_use_with(fold_const);
+                        wait_delete.push_back(&instr);
+                    }
+                } else if (instr.is_fp2si()) {
+                    auto v = cast_constantfp(instr.get_operand(0));
+                    if (v) {
+                        auto fold_const = folder->compute(instr.get_instr_type(), v);
+                        instr.replace_all_use_with(fold_const);
+                        wait_delete.push_back(&instr);
+                    }
+                } else if (instr.is_si2fp()) {
+                    auto v = cast_constantint(instr.get_operand(0));
+                    if (v) {
+                        auto fold_const = folder->compute(instr.get_instr_type(), v);
+                        instr.replace_all_use_with(fold_const);
+                        wait_delete.push_back(&instr);
+                    }
+                }
             }
             globalvar_def.clear();
             for (auto instr : wait_delete) {
@@ -157,8 +195,50 @@ void ConstPropagation::run() {
     for (auto &func : m_->get_functions()) {
         for (auto &bb : func.get_basic_blocks()) {
             builder->set_insert_point(&bb);
-            // TODO: check if conditional branch's condition is constant
-            throw std::runtime_error("Lab2: 你有一个TODO需要完成！");
+            // check if conditional branch's condition is constant
+            if (!bb.get_instructions().empty()) {
+                Instruction *term = nullptr;
+                if (bb.is_terminated())
+                    term = bb.get_terminator();
+                if (term && term->is_br()) {
+                    BranchInst *br = static_cast<BranchInst *>(term);
+                    if (br->is_cond_br()) {
+                        Value *cond = br->get_condition();
+                        bool taken = false;
+                        bool is_const = false;
+                        if (auto ci = cast_constantint(cond)) {
+                            is_const = true;
+                            taken = (ci->get_value() != 0);
+                        } else if (auto cf = cast_constantfp(cond)) {
+                            is_const = true;
+                            taken = (cf->get_value() != 0.0f);
+                        }
+                        if (is_const) {
+                            // determine chosen successor
+                            BasicBlock *chosen = static_cast<BasicBlock *>(br->get_operand(taken ? 1 : 2));
+                            // record old successors
+                            std::vector<BasicBlock *> old_succs(br->get_num_operand() >= 3 ? std::vector<BasicBlock *>{static_cast<BasicBlock *>(br->get_operand(1)), static_cast<BasicBlock *>(br->get_operand(2))} : std::vector<BasicBlock *>{static_cast<BasicBlock *>(br->get_operand(0))});
+                            // create unconditional branch to chosen
+                            builder->create_br(chosen);
+                            // remove old branch instruction
+                            bb.erase_instr(br);
+                            // update CFG: remove this bb from old successors' pre lists
+                            for (auto s : old_succs) {
+                                if (s == chosen) continue;
+                                s->remove_pre_basic_block(&bb);
+                                bb.remove_succ_basic_block(s);
+                                // if successor now has no predecessors and is not entry, mark for deletion
+                                if (s->get_pre_basic_blocks().empty() && !is_entry(s)) {
+                                    delete_bb.push_back(s);
+                                }
+                            }
+                            // ensure chosen has this bb as predecessor and is in succ list
+                            chosen->add_pre_basic_block(&bb);
+                            bb.add_succ_basic_block(chosen);
+                        }
+                    }
+                }
+            }
         }
         for (auto bb : delete_bb) {
             clear_blocks_recs(bb);
@@ -168,9 +248,10 @@ void ConstPropagation::run() {
 }
 
 bool ConstPropagation::is_entry(BasicBlock *bb) {
-    // TODO
-    throw std::runtime_error("Lab2: 你有一个TODO需要完成！");
-    return false;
+    if (bb == nullptr) return false;
+    auto func = bb->get_parent();
+    if (func == nullptr) return false;
+    return bb == func->get_entry_block();
 }
 
 void ConstPropagation::clear_blocks_recs(BasicBlock *start_bb) {

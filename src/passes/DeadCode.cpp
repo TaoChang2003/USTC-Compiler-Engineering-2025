@@ -128,9 +128,6 @@ bool DeadCode::is_critical(Instruction *ins) {
     if (ins->is_call()) {
         auto call_inst = static_cast<CallInst *>(ins);
         auto callee = call_inst->func_;
-        // FuncInfo::is_pure_function may throw std::out_of_range if the
-        // function is not present in the map. Handle that safely here and
-        // treat unknown functions as impure (conservative choice).
         bool is_pure = false;
         try {
             is_pure = func_info->is_pure_function(callee);
