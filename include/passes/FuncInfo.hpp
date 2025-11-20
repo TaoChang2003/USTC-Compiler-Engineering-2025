@@ -17,7 +17,12 @@ class FuncInfo : public Pass {
 
     void run();
 
-    bool is_pure_function(Function *func) const { return is_pure.at(func); }
+  bool is_pure_function(Function *func) const {
+    auto it = is_pure.find(func);
+    if (it == is_pure.end())
+      return false; // unknown functions are considered impure by default
+    return it->second;
+  }
 
   private:
     std::deque<Function *> worklist;

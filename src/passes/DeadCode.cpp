@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include <unordered_set>
+#include <stdexcept>
 
 
 // 处理流程：两趟处理，mark 标记有用变量，sweep 删除无用指令
@@ -47,9 +48,7 @@ bool DeadCode::clear_basic_blocks(Function *func) {
 }
 
 void DeadCode::mark(Function *func) {
-    // TODO
-    std::vector<BasicBlock *> worklist;
-    
+    // 遍历函数所有指令，把 "关键" 指令作为起点进行递归标记
     for (auto &bb : func->get_basic_blocks()) {
         for (auto &instr : bb.get_instructions()) {
             Instruction *ins = &instr;
@@ -129,7 +128,16 @@ bool DeadCode::is_critical(Instruction *ins) {
     if (ins->is_call()) {
         auto call_inst = static_cast<CallInst *>(ins);
         auto callee = call_inst->func_;
-        return !func_info->is_pure_function(callee);  
+        // FuncInfo::is_pure_function may throw std::out_of_range if the
+        // function is not present in the map. Handle that safely here and
+        // treat unknown functions as impure (conservative choice).
+        bool is_pure = false;
+        try {
+            is_pure = func_info->is_pure_function(callee);
+        } catch (const std::out_of_range &) {
+            is_pure = false;
+        }
+        return !is_pure;
     }
 
     if (ins->is_br() || ins->is_ret() || ins->is_store()) {
