@@ -242,13 +242,11 @@ void ConstPropagation::run() {
                             BasicBlock *chosen = static_cast<BasicBlock *>(br->get_operand(taken ? 1 : 2));
                             // record old successors
                             std::vector<BasicBlock *> old_succs(br->get_num_operand() >= 3 ? std::vector<BasicBlock *>{static_cast<BasicBlock *>(br->get_operand(1)), static_cast<BasicBlock *>(br->get_operand(2))} : std::vector<BasicBlock *>{static_cast<BasicBlock *>(br->get_operand(0))});
-                            // create unconditional branch to chosen
-                            builder->create_br(chosen);
-                            // remove old branch instruction
+                            // remove old branch instruction first so we can insert new one
+                            // safely (add_instruction asserts block is not terminated)
                             bb.erase_instr(br);
-                            // update CFG: remove this bb from old successors' pre lists
+                            // update CFG: remove this bb from all old successors' pre lists
                             for (auto s : old_succs) {
-                                if (s == chosen) continue;
                                 s->remove_pre_basic_block(&bb);
                                 bb.remove_succ_basic_block(s);
                                 // if successor now has no predecessors and is not entry, mark for deletion
@@ -256,9 +254,8 @@ void ConstPropagation::run() {
                                     delete_bb.push_back(s);
                                 }
                             }
-                            // ensure chosen has this bb as predecessor and is in succ list
-                            chosen->add_pre_basic_block(&bb);
-                            bb.add_succ_basic_block(chosen);
+                            // create unconditional branch to chosen (this will add chosen as succ/pre)
+                            builder->create_br(chosen);
                         }
                     }
                 }
