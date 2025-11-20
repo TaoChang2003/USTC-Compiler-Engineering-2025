@@ -1,5 +1,6 @@
 #include "ConstPropagation.hpp"
 
+#include "Constant.hpp"
 #include "Instruction.hpp"
 #include "logging.hpp"
 
@@ -157,7 +158,30 @@ void ConstPropagation::run() {
                     auto v1 = cast_constantfp(instr.get_operand(0));
                     auto v2 = cast_constantfp(instr.get_operand(1));
                     if (v1 && v2) {
-                        auto fold_const = folder->compute(instr.get_instr_type(), v1, v2);
+                        bool res = false;
+                        switch (instr.get_instr_type()) {
+                        case Instruction::feq:
+                            res = (v1->get_value() == v2->get_value());
+                            break;
+                        case Instruction::fne:
+                            res = (v1->get_value() != v2->get_value());
+                            break;
+                        case Instruction::fgt:
+                            res = (v1->get_value() > v2->get_value());
+                            break;
+                        case Instruction::fge:
+                            res = (v1->get_value() >= v2->get_value());
+                            break;
+                        case Instruction::flt:
+                            res = (v1->get_value() < v2->get_value());
+                            break;
+                        case Instruction::fle:
+                            res = (v1->get_value() <= v2->get_value());
+                            break;
+                        default:
+                            break;
+                        }
+                        auto fold_const = ConstantInt::get(res, m_);
                         instr.replace_all_use_with(fold_const);
                         wait_delete.push_back(&instr);
                     }
