@@ -144,9 +144,7 @@ void ConstPropagation::run() {
                         instr.replace_all_use_with(fold_const);
                         wait_delete.push_back(&instr);
                     }
-                }
-                // fold other types: int cmp, float binary ops, and casts
-                else if (instr.is_cmp()) {
+                } else if (instr.is_cmp()) {
                     auto v1 = cast_constantint(instr.get_operand(0));
                     auto v2 = cast_constantint(instr.get_operand(1));
                     if (v1 && v2) {
